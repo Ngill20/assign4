@@ -3,7 +3,6 @@ pandas
 pyodbc
 python-dotenv
 gunicorn
-collections
-re
+
 
 
