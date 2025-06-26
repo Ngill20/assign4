@@ -6,11 +6,18 @@ from dotenv import load_dotenv
 import string
 import re
 from collections import Counter
+from sklearn.feature_extraction.text import TfidfVectorizer
+from nltk.stem import PorterStemmer
+import numpy as np
+
+
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
 load_dotenv()
+stemmer = PorterStemmer()
+_stop_words_cache = None  # Global cache
 
 # Load Azure config
 AZURE_CONN = os.getenv("AZURE_CONNECTION_STRING")
@@ -200,8 +207,77 @@ def search_text():
     return render_template("search.html", results=results)
 
 
+def clean_text(text):
+    global _stop_words_cache
+
+    # Load stop words from Azure Blob once
+    if _stop_words_cache is None:
+        stop_blob = container_client.get_blob_client("StopWords.txt")
+        if not stop_blob.exists():
+            flash("StopWords.txt is missing. Upload it before processing text.")
+            raise FileNotFoundError("StopWords.txt not found in Azure Blob Storage.")
+
+        stop_data = stop_blob.download_blob().readall().decode("utf-8", errors="ignore")
+        _stop_words_cache = set(
+            word.strip(string.punctuation).lower() 
+            for word in stop_data.split()
+        )
+
+    stop_words = _stop_words_cache
+
+    text = text.encode('ascii', errors='ignore').decode()
+    text = text.lower()
+    text = text.translate(str.maketrans('', '', string.punctuation))
+    words = [stemmer.stem(word) for word in text.split() if word not in stop_words]
+    return ' '.join(words)
 
 
+
+@app.route("/semantic_search", methods=["GET", "POST"])
+def semantic_search():
+    results = []
+
+    blobs = [
+    blob.name for blob in container_client.list_blobs()
+    if blob.name.endswith("_processed.txt")
+    ]
+
+    docs = []
+    filenames = []
+
+    for blob_name in blobs:
+        blob_client = container_client.get_blob_client(blob_name)
+        content = blob_client.download_blob().readall().decode("utf-8", errors="ignore")
+        cleaned = clean_text(content)
+        docs.append(cleaned)
+        filenames.append(blob_name)
+
+    if request.method == "POST":
+        query = request.form.get("query", "").strip()
+        top_k = 5
+
+        # Load stopwords first if not already
+        stop_blob = container_client.get_blob_client("StopWords.txt")
+        stop_data = stop_blob.download_blob().readall().decode("utf-8")
+        global stop_words
+        stop_words = set(stop_data.lower().split())
+
+        # Vectorize using bi-gram TF-IDF
+        vectorizer = TfidfVectorizer(ngram_range=(1, 2))
+        doc_matrix = vectorizer.fit_transform(docs)
+
+        # Clean and vectorize query
+        query_cleaned = clean_text(query)
+        query_vec = vectorizer.transform([query_cleaned])
+
+        # Compute cosine similarity scores
+        scores = (doc_matrix @ query_vec.T).toarray().flatten()
+        scored_docs = [(filenames[i], scores[i]) for i in range(len(filenames)) if scores[i] > 0]
+        top_docs = sorted(scored_docs, key=lambda x: -x[1])[:top_k]
+
+        results = top_docs
+
+    return render_template("semantic_search.html", results=results)
 
 
 if __name__ == "__main__":

@@ -4,5 +4,6 @@ pyodbc
 python-dotenv
 gunicorn
 azure-storage-blob
-
+scikit-learn
+nltk
 
