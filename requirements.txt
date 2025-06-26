@@ -3,6 +3,6 @@ pandas
 pyodbc
 python-dotenv
 gunicorn
-
+azure-storage-blob
 
 
